@@ -2,9 +2,8 @@
     module
     lang="ts"
 >
-    import { SvelteMap } from "svelte/reactivity";
     import GithubIcon from "./assets/github.svg";
-    import DirectoryEditor, { type Directory } from "./DirectoryEditor.svelte";
+    import DirectoryEditor, { getRootDirectory, isRootDirectoryEmpty, type Directory } from "./DirectoryEditor.svelte";
     import {
         createISO,
         FileSystemNodeType,
@@ -19,19 +18,9 @@
 </script>
 
 <script lang="ts">
-    let rootDirectory: Directory = $state({
-        files: new SvelteMap(),
-        subdirectories: new SvelteMap(),
-        parent: null,
-        collapsed: false,
-        selected: false,
-    });
+    let isEmpty = $derived.by(isRootDirectoryEmpty);
 
     async function download() {
-        if (rootDirectory.files.size === 0 && rootDirectory.subdirectories.size === 0) {
-            return;
-        }
-
         const inputRootDirectory: InputFileSystemDirectoryNode = {
             type: FileSystemNodeType.Directory,
             children: [],
@@ -39,28 +28,28 @@
         };
 
         const visit = (inputDirectory: InputFileSystemDirectoryNode, directory: Directory) => {
-            for (const [name, file] of directory.files) {
+            for (const node of directory.files) {
                 inputDirectory.children.push({
                     type: FileSystemNodeType.File,
-                    name,
-                    contents: file,
-                    date: new Date(file.lastModified),
+                    name: node.key,
+                    contents: node.value,
+                    date: new Date(node.value.lastModified),
                 });
             }
 
-            for (const [name, subdirectory] of directory.subdirectories) {
+            for (const node of directory.subdirectories) {
                 const inputSubdirectory: InputFileSystemDirectoryNode = {
                     type: FileSystemNodeType.Directory,
-                    name,
+                    name: node.key,
                     children: [],
                 };
 
                 inputDirectory.children.push(inputSubdirectory);
-                visit(inputSubdirectory, subdirectory);
+                visit(inputSubdirectory, node.value);
             }
         };
 
-        visit(inputRootDirectory, rootDirectory);
+        visit(inputRootDirectory, getRootDirectory());
 
         const result = createISO(inputRootDirectory, params);
         if (!result.success) {
@@ -96,11 +85,11 @@
 
     <div class="title">Create ISO files online</div>
 
-    <DirectoryEditor bind:rootDirectory />
+    <DirectoryEditor />
 
     <button
         onclick={download}
-        disabled={rootDirectory.files.size === 0 && rootDirectory.subdirectories.size === 0}
+        disabled={isEmpty}
     >
         Download
     </button>

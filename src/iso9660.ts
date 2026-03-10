@@ -518,7 +518,7 @@ function ensureValidPVD(name: string, isDirectory: boolean, usedNames: Set<strin
             return fullname;
         }
 
-        const counterStr = counter.toString();
+        const counterStr = (counter++).toString();
         newName = newName.substring(0, nameLength - 1 - counterStr.length) + "~" + counterStr;
     }
 }
