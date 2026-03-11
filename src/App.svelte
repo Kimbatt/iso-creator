@@ -1,24 +1,41 @@
-<script
-    module
-    lang="ts"
->
+<script lang="ts">
     import GithubIcon from "./assets/github.svg";
-    import DirectoryEditor, { getRootDirectory, isRootDirectoryEmpty, type Directory } from "./DirectoryEditor.svelte";
+    import DirectoryEditor, {
+        getRootDirectory,
+        getRootDirectoryName,
+        isRootDirectoryEmpty,
+        type Directory,
+    } from "./DirectoryEditor.svelte";
     import {
         createISO,
         FileSystemNodeType,
+        IsoCreationErrorCode,
+        maxFileOrDirectoryNameLength,
+        validateVolumeName,
+        VolumeNameValidationResult,
         type InputFileSystemDirectoryNode,
-        type IsoCreationParameters,
+        type IsoCreationError,
     } from "./iso9660";
 
     let downloadLink: HTMLAnchorElement;
-    const params: IsoCreationParameters = {
-        volumeName: "test 1234",
-    };
-</script>
 
-<script lang="ts">
     let isEmpty = $derived.by(isRootDirectoryEmpty);
+    let volumeName = $derived(getRootDirectoryName() ?? "");
+    let volumeNameValidationResult = $derived(validateVolumeName(volumeName));
+
+    let creationErrors: IsoCreationError[] = $state([]); // These errors don't disable the download button, because they are not known in advance
+    let canDownload = $derived(
+        !isEmpty && volumeName.length > 0 && volumeNameValidationResult === VolumeNameValidationResult.Ok,
+    );
+    let hasErrors = $derived(
+        (volumeNameValidationResult !== VolumeNameValidationResult.Ok &&
+            volumeNameValidationResult !== VolumeNameValidationResult.Empty) ||
+            creationErrors.length > 0,
+    );
+
+    const errorTextNameTooLong = "Disk image name must not be longer than 16 characters";
+    const errorTextNameInvalidCharacters =
+        "Disk image name can only contain english characters, numbers, and symbols (character codes 32 to 126)";
 
     async function download() {
         const inputRootDirectory: InputFileSystemDirectoryNode = {
@@ -51,17 +68,22 @@
 
         visit(inputRootDirectory, getRootDirectory());
 
-        const result = createISO(inputRootDirectory, params);
+        const result = createISO(inputRootDirectory, {
+            volumeName,
+        });
+
         if (!result.success) {
-            console.error(result.errors);
+            creationErrors = result.errors;
             return;
         }
+
+        creationErrors = [];
 
         const blob = new Blob(result.result);
         const url = URL.createObjectURL(blob);
 
         downloadLink.href = url;
-        downloadLink.download = "test.iso";
+        downloadLink.download = `${volumeName}.iso`;
         downloadLink.click();
 
         setTimeout(() => {
@@ -87,9 +109,77 @@
 
     <DirectoryEditor />
 
+    <div class="input-container">
+        <div>Disk image name</div>
+        <input
+            type="text"
+            placeholder="Name is empty"
+            bind:value={volumeName}
+        />
+    </div>
+
+    {#if hasErrors}
+        <div class="error-text-container">
+            {#if volumeNameValidationResult === VolumeNameValidationResult.InvalidCharacter}
+                <div>{errorTextNameInvalidCharacters}</div>
+            {:else if volumeNameValidationResult === VolumeNameValidationResult.TooLong}
+                <div>{errorTextNameTooLong}</div>
+            {/if}
+
+            {#if creationErrors.length === 1}
+                <div>An error occurred during disk image creation:</div>
+            {:else if creationErrors.length > 1}
+                <div>Errors occurred during disk image creation:</div>
+            {/if}
+            {#each creationErrors as error}
+                {@const errorText = (() => {
+                    switch (error.type) {
+                        case IsoCreationErrorCode.NameTooLong:
+                            return `${
+                                error.isDirectory ? "Folder" : "File"
+                            } name is too long (maximum length is ${maxFileOrDirectoryNameLength} characters)`;
+
+                        case IsoCreationErrorCode.NameAlreadyExists:
+                            return `A file and a folder has the same name - this is not allowed`;
+
+                        case IsoCreationErrorCode.TooManyDirectories:
+                            return `The ISO file format doesn't allow more than 65535 total folders in a single disk image file`;
+
+                        case IsoCreationErrorCode.InvalidVolumeName: {
+                            // We shouldn't get this error, since the UI only allows the creation if the volume name is valid
+
+                            switch (error.validationResult) {
+                                case VolumeNameValidationResult.Ok:
+                                case VolumeNameValidationResult.Empty:
+                                    return ""; // Shouldn't happen
+
+                                case VolumeNameValidationResult.InvalidCharacter:
+                                    return errorTextNameInvalidCharacters;
+                                case VolumeNameValidationResult.TooLong:
+                                    return errorTextNameTooLong;
+                            }
+                        }
+                    }
+                })()}
+
+                {#if error.type === IsoCreationErrorCode.NameTooLong || error.type === IsoCreationErrorCode.NameAlreadyExists}
+                    <div class="error-with-path">
+                        <div>{errorText}</div>
+                        <span>Path:</span>
+                        {#each error.path as segment, index}
+                            <code>{`${segment}${index === error.path.length - 1 ? "" : "/"}`}</code>
+                        {/each}
+                    </div>
+                {:else}
+                    <div>{errorText}</div>
+                {/if}
+            {/each}
+        </div>
+    {/if}
+
     <button
         onclick={download}
-        disabled={isEmpty}
+        disabled={!canDownload}
     >
         Download
     </button>
@@ -159,9 +249,14 @@
             }
         }
 
-        input[type="text"]::placeholder {
-            color: c.$color-placeholder;
-            font-style: italic;
+        input[type="text"] {
+            font-size: c.$font-size-default;
+            padding: 5px;
+
+            &::placeholder {
+                color: c.$color-placeholder;
+                font-style: italic;
+            }
         }
 
         a {
@@ -189,6 +284,16 @@
         box-sizing: border-box;
     }
 
+    .input-container {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+
+        > div {
+            user-select: none;
+        }
+    }
+
     .title {
         font-size: c.$font-size-title;
     }
@@ -199,5 +304,35 @@
         height: 32px;
         top: 20px;
         right: 20px;
+    }
+
+    .error-text-container {
+        font-size: c.$font-size-default;
+        color: #ff5050;
+        white-space: pre-line;
+
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+
+        min-height: 200px;
+        max-height: 40vh;
+        overflow-y: auto;
+
+        > .error-with-path {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+
+            > * {
+                margin: 0px;
+            }
+
+            code {
+                background-color: c.$color-monospace-background;
+                padding: 2px 4px;
+                border-radius: 4px;
+            }
+        }
     }
 </style>

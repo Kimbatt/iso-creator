@@ -245,6 +245,8 @@
         selected: false,
     });
 
+    let rootDirectoryName: string | null = $state(null);
+
     export function getRootDirectory() {
         return untrack(
             (): Directory => ({
@@ -256,6 +258,10 @@
 
     export function isRootDirectoryEmpty() {
         return rootDirectory.files.isEmpty() && rootDirectory.subdirectories.isEmpty();
+    }
+
+    export function getRootDirectoryName() {
+        return rootDirectoryName;
     }
 </script>
 
@@ -282,6 +288,12 @@
         selectDirectory(rootDirectory, false);
 
         addFiles(folderSelector);
+
+        if (folderSelector.files !== null && folderSelector.files.length !== 0) {
+            rootDirectoryName = folderSelector.files[0].webkitRelativePath.split("/")[0];
+        } else {
+            rootDirectoryName = null;
+        }
     }
     function addFolder() {
         addFiles(folderAdder);
@@ -527,7 +539,7 @@
         flex-direction: column;
         gap: 8px;
         flex-grow: 1;
-        min-height: 20vh;
+        min-height: 200px;
         overflow-y: auto;
     }
 
@@ -535,11 +547,6 @@
         display: flex;
         flex-direction: row;
         gap: 8px;
-        flex-wrap: wrap;
-
-        > button {
-            flex-basis: 150px;
-        }
     }
 
     .list-container {

@@ -9,7 +9,6 @@ const createSingleFilePlugin: PluginOption = {
         let htmlFileName: string | null = null;
         let scriptFileName: string | null = null;
         let cssFileName: string | null = null;
-        let workerFileName: string | null = null;
 
         const imageExtensions = [".png", ".svg", ".ico"] as const;
         type ImageExtensionName = (typeof imageExtensions)[number];
@@ -24,12 +23,7 @@ const createSingleFilePlugin: PluginOption = {
             }
 
             if (fileName.endsWith(".js")) {
-                if (bundle[fileName].type === "asset") {
-                    if (workerFileName !== null) {
-                        throw Error("Expected only one worker script file");
-                    }
-                    workerFileName = fileName;
-                } else {
+                if (bundle[fileName].type === "chunk") {
                     if (scriptFileName !== null) {
                         throw Error("Expected only one script file");
                     }
@@ -61,24 +55,15 @@ const createSingleFilePlugin: PluginOption = {
         if (cssFileName === null) {
             throw Error("Expected to have a css file");
         }
-        if (workerFileName === null) {
-            throw Error("Expected to have a worker script file");
-        }
 
         const htmlFile = bundle[htmlFileName];
         const scriptFile = bundle[scriptFileName];
         const cssFile = bundle[cssFileName];
-        const workerFile = bundle[workerFileName];
-        if (
-            htmlFile.type !== "asset" ||
-            scriptFile.type !== "chunk" ||
-            cssFile.type !== "asset" ||
-            workerFile.type !== "asset"
-        ) {
+        if (htmlFile.type !== "asset" || scriptFile.type !== "chunk" || cssFile.type !== "asset") {
             throw Error("Unexpected bundled type");
         }
 
-        if (typeof cssFile.source !== "string" || typeof workerFile.source !== "string") {
+        if (typeof cssFile.source !== "string") {
             throw Error("Expected file source to be a string");
         }
 
@@ -96,16 +81,12 @@ const createSingleFilePlugin: PluginOption = {
             const scriptTag = scriptTags[0];
             const newScript = doc.createElement("script");
 
-            // This variable name is used in the code
-            const workerScriptDeclaration = `var workerScriptSource = ${JSON.stringify(workerFile.source)};\n`;
-
-            newScript.textContent = workerScriptDeclaration + scriptFile.code;
+            newScript.textContent = scriptFile.code;
 
             scriptTag.remove();
             doc.body.appendChild(newScript);
 
             delete bundle[scriptFileName];
-            delete bundle[workerFileName];
         }
 
         // Inline css

@@ -87,25 +87,25 @@ export const enum IsoCreationErrorCode {
     NameTooLong,
     NameAlreadyExists,
     TooManyDirectories,
-    IOReadError,
-    IOWriteError,
-
     InvalidVolumeName,
 }
 
 export type IsoCreationError =
     | {
-          type:
-              | IsoCreationErrorCode.TooManyDirectories
-              | IsoCreationErrorCode.IOWriteError
-              | IsoCreationErrorCode.InvalidVolumeName;
+          type: IsoCreationErrorCode.TooManyDirectories;
       }
     | {
-          type:
-              | IsoCreationErrorCode.NameTooLong
-              | IsoCreationErrorCode.NameAlreadyExists
-              | IsoCreationErrorCode.IOReadError;
+          type: IsoCreationErrorCode.NameTooLong;
+          isDirectory: boolean;
           path: string[];
+      }
+    | {
+          type: IsoCreationErrorCode.NameAlreadyExists;
+          path: string[];
+      }
+    | {
+          type: IsoCreationErrorCode.InvalidVolumeName;
+          validationResult: VolumeNameValidationResult;
       };
 
 export type IsoCreationResult =
@@ -117,6 +117,42 @@ export type IsoCreationResult =
           success: false;
           errors: IsoCreationError[];
       };
+
+export const enum VolumeNameValidationResult {
+    Ok,
+    Empty,
+    InvalidCharacter,
+    TooLong,
+}
+
+export function validateVolumeName(name: string): VolumeNameValidationResult {
+    if (name.length === 0) {
+        // Name must not be empty
+        return VolumeNameValidationResult.Empty;
+    } else if (name.length > 16) {
+        // Name cannot be longer than 16 characters
+        // The limit is 32 bytes, but since the joliet version uses two bytes per character, the length limit is 16
+        return VolumeNameValidationResult.TooLong;
+    }
+
+    // Name can only contain ascii characters
+    for (let i = 0; i < name.length; ++i) {
+        // No need to handle "multi-character" characters with `codePointAt`, those are outside the valid range anyways
+        const ch = name.charCodeAt(i);
+
+        if (ch < 0x20 || ch >= 0x7f) {
+            return VolumeNameValidationResult.InvalidCharacter;
+        }
+    }
+
+    return VolumeNameValidationResult.Ok;
+}
+
+// According to the standard, the length limit is 64 characters, but practically every reader supports length up to 110 characters
+export const maxFileOrDirectoryNameLength = 64;
+
+// Since the path table stores the parent directory number as 16-bit numbers, 65535 is the largest possible id that can be stored
+export const maxNumDirectories = 65535;
 
 const textEncoder = new TextEncoder();
 
@@ -131,16 +167,17 @@ export function createISO(
     inputRootDirectory: InputFileSystemDirectoryNode,
     params: IsoCreationParameters,
 ): IsoCreationResult {
-    // Validate volume name: can only contain ascii characters
-    for (let i = 0; i < params.volumeName.length; ++i) {
-        // No need to handle "multi-character" characters with `codePointAt`, those are outside the valid range anyways
-        const ch = params.volumeName.charCodeAt(i);
-        if (ch < 0x20 || ch >= 0x7f) {
-            return {
-                success: false,
-                errors: [{ type: IsoCreationErrorCode.InvalidVolumeName }],
-            };
-        }
+    const volumeNameValidationResult = validateVolumeName(params.volumeName);
+    if (volumeNameValidationResult !== VolumeNameValidationResult.Ok) {
+        return {
+            success: false,
+            errors: [
+                {
+                    type: IsoCreationErrorCode.InvalidVolumeName,
+                    validationResult: volumeNameValidationResult,
+                },
+            ],
+        };
     }
 
     const errors: IsoCreationError[] = [];
@@ -180,9 +217,6 @@ export function createISO(
 
     allDirectories.push(rootDir);
 
-    // Some implementations allow longer names, but use the standard limit to be sure
-    const maxJolietNameLength = 64;
-
     // Need to add directories in breadth-first order
     const queue: { inputDirectory: InputFileSystemDirectoryNode; isoDirectory: DirectoryEntry }[] = [
         {
@@ -199,7 +233,7 @@ export function createISO(
 
             const jolietName = child.name;
 
-            const nameTooLong = jolietName.length > maxJolietNameLength;
+            const nameTooLong = jolietName.length > maxFileOrDirectoryNameLength;
             if (nameTooLong || parent.jolietUsedNames.has(jolietName)) {
                 // Name is too long or already exists, collect directory hierarchy for error reporting
 
@@ -213,10 +247,18 @@ export function createISO(
 
                 path.push(child.name);
 
-                errors.push({
-                    type: nameTooLong ? IsoCreationErrorCode.NameTooLong : IsoCreationErrorCode.NameAlreadyExists,
-                    path,
-                });
+                if (nameTooLong) {
+                    errors.push({
+                        type: IsoCreationErrorCode.NameTooLong,
+                        isDirectory,
+                        path,
+                    });
+                } else {
+                    errors.push({
+                        type: IsoCreationErrorCode.NameAlreadyExists,
+                        path,
+                    });
+                }
                 continue;
             }
 
@@ -315,9 +357,7 @@ export function createISO(
         };
     }
 
-    if (directoryId >= 65536) {
-        // Since the path table stores the parent directory number as 16-bit numbers,
-        // 65535 is the largest possible id that can be stored
+    if (directoryId > maxNumDirectories) {
         return {
             success: false,
             errors: [{ type: IsoCreationErrorCode.TooManyDirectories }],
