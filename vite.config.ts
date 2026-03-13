@@ -169,9 +169,9 @@ export default defineConfig(env => {
 
             // Create the least amount of files
             cssCodeSplit: false,
-            rollupOptions: {
+            rolldownOptions: {
                 output: {
-                    inlineDynamicImports: true,
+                    codeSplitting: false,
                 },
             },
         },

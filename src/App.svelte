@@ -6,11 +6,13 @@
         isRootDirectoryEmpty,
         type Directory,
     } from "./DirectoryEditor.svelte";
+    import FullscreenDialog from "./FullscreenDialog.svelte";
     import {
         createISO,
         FileSystemNodeType,
         IsoCreationErrorCode,
         maxFileOrDirectoryNameLength,
+        maxVolumeNameLength,
         validateVolumeName,
         VolumeNameValidationResult,
         type InputFileSystemDirectoryNode,
@@ -20,7 +22,7 @@
     let downloadLink: HTMLAnchorElement;
 
     let isEmpty = $derived.by(isRootDirectoryEmpty);
-    let volumeName = $derived(getRootDirectoryName() ?? "");
+    let volumeName = $state("");
     let volumeNameValidationResult = $derived(validateVolumeName(volumeName));
 
     let creationErrors: IsoCreationError[] = $state([]); // These errors don't disable the download button, because they are not known in advance
@@ -33,7 +35,16 @@
             creationErrors.length > 0,
     );
 
-    const errorTextNameTooLong = "Disk image name must not be longer than 16 characters";
+    $effect(() => {
+        const rootDirectoryName = getRootDirectoryName();
+        if (rootDirectoryName !== null) {
+            volumeName = rootDirectoryName;
+        }
+
+        creationErrors = [];
+    });
+
+    const errorTextNameTooLong = `Disk image name must not be longer than ${maxVolumeNameLength} characters`;
     const errorTextNameInvalidCharacters =
         "Disk image name can only contain english characters, numbers, and symbols (character codes 32 to 126)";
 
@@ -118,64 +129,67 @@
         />
     </div>
 
-    {#if hasErrors}
-        <div class="error-text-container">
-            {#if volumeNameValidationResult === VolumeNameValidationResult.InvalidCharacter}
-                <div>{errorTextNameInvalidCharacters}</div>
-            {:else if volumeNameValidationResult === VolumeNameValidationResult.TooLong}
-                <div>{errorTextNameTooLong}</div>
-            {/if}
+    <div
+        class="error-text-container"
+        style:visibility={hasErrors ? null : "hidden"}
+    >
+        {#if volumeNameValidationResult === VolumeNameValidationResult.InvalidCharacter}
+            <div>{errorTextNameInvalidCharacters}</div>
+        {:else if volumeNameValidationResult === VolumeNameValidationResult.TooLong}
+            <div>{errorTextNameTooLong}</div>
+        {/if}
 
-            {#if creationErrors.length === 1}
-                <div>An error occurred during disk image creation:</div>
-            {:else if creationErrors.length > 1}
-                <div>Errors occurred during disk image creation:</div>
-            {/if}
-            {#each creationErrors as error}
-                {@const errorText = (() => {
-                    switch (error.type) {
-                        case IsoCreationErrorCode.NameTooLong:
-                            return `${
-                                error.isDirectory ? "Folder" : "File"
-                            } name is too long (maximum length is ${maxFileOrDirectoryNameLength} characters)`;
+        {#if creationErrors.length === 1}
+            <div>An error occurred during disk image creation:</div>
+        {:else if creationErrors.length > 1}
+            <div>Errors occurred during disk image creation:</div>
+        {/if}
+        {#each creationErrors as error}
+            {@const errorText = (() => {
+                switch (error.type) {
+                    case IsoCreationErrorCode.NameTooLong:
+                        return `${
+                            error.isDirectory ? "Folder" : "File"
+                        } name is too long (maximum length is ${maxFileOrDirectoryNameLength} characters)`;
 
-                        case IsoCreationErrorCode.NameAlreadyExists:
-                            return `A file and a folder has the same name - this is not allowed`;
+                    case IsoCreationErrorCode.NameAlreadyExists:
+                        return `A file and a folder has the same name - this is not allowed`;
 
-                        case IsoCreationErrorCode.TooManyDirectories:
-                            return `The ISO file format doesn't allow more than 65535 total folders in a single disk image file`;
+                    case IsoCreationErrorCode.TooManyDirectories:
+                        return `The ISO file format doesn't allow more than 65535 total folders in a single disk image file`;
 
-                        case IsoCreationErrorCode.InvalidVolumeName: {
-                            // We shouldn't get this error, since the UI only allows the creation if the volume name is valid
+                    case IsoCreationErrorCode.InvalidVolumeName: {
+                        // We shouldn't get this error, since the UI only allows the creation if the volume name is valid
 
-                            switch (error.validationResult) {
-                                case VolumeNameValidationResult.Ok:
-                                case VolumeNameValidationResult.Empty:
-                                    return ""; // Shouldn't happen
+                        switch (error.validationResult) {
+                            case VolumeNameValidationResult.Ok:
+                            case VolumeNameValidationResult.Empty:
+                                return ""; // Shouldn't happen
 
-                                case VolumeNameValidationResult.InvalidCharacter:
-                                    return errorTextNameInvalidCharacters;
-                                case VolumeNameValidationResult.TooLong:
-                                    return errorTextNameTooLong;
-                            }
+                            case VolumeNameValidationResult.InvalidCharacter:
+                                return errorTextNameInvalidCharacters;
+                            case VolumeNameValidationResult.TooLong:
+                                return errorTextNameTooLong;
                         }
                     }
-                })()}
+                }
+            })()}
 
-                {#if error.type === IsoCreationErrorCode.NameTooLong || error.type === IsoCreationErrorCode.NameAlreadyExists}
-                    <div class="error-with-path">
-                        <div>{errorText}</div>
-                        <span>Path:</span>
-                        {#each error.path as segment, index}
-                            <code>{`${segment}${index === error.path.length - 1 ? "" : "/"}`}</code>
-                        {/each}
-                    </div>
-                {:else}
+            {#if error.type === IsoCreationErrorCode.NameTooLong || error.type === IsoCreationErrorCode.NameAlreadyExists}
+                <div class="error-with-path">
                     <div>{errorText}</div>
-                {/if}
-            {/each}
-        </div>
-    {/if}
+                    <span>Path:</span>
+                    <code>
+                        {error.path
+                            .map((segment, index) => segment + (index === error.path.length - 1 ? "" : "/"))
+                            .join("\n")}
+                    </code>
+                </div>
+            {:else}
+                <div>{errorText}</div>
+            {/if}
+        {/each}
+    </div>
 
     <button
         onclick={download}
@@ -184,6 +198,8 @@
         Download
     </button>
 </div>
+
+<FullscreenDialog />
 
 <style lang="scss">
     @use "./Constants.scss" as c;
@@ -280,7 +296,7 @@
         gap: 20px;
 
         max-width: 1200px;
-        max-height: 100vh;
+        min-height: 100vh;
         box-sizing: border-box;
     }
 
@@ -308,28 +324,33 @@
 
     .error-text-container {
         font-size: c.$font-size-default;
-        color: #ff5050;
+        color: #ff4040;
         white-space: pre-line;
 
         display: flex;
         flex-direction: column;
         gap: 16px;
 
-        min-height: 200px;
-        max-height: 40vh;
+        flex-grow: 1;
         overflow-y: auto;
+        max-height: 200px;
 
         > .error-with-path {
             display: flex;
             flex-direction: column;
             gap: 2px;
+            color: c.$color-text;
+
+            background-color: #7b1e1e;
+            border-radius: c.$default-border-radius;
+            padding: 8px;
 
             > * {
                 margin: 0px;
             }
 
             code {
-                background-color: c.$color-monospace-background;
+                background-color: #361010;
                 padding: 2px 4px;
                 border-radius: 4px;
             }

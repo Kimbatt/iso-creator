@@ -28,6 +28,8 @@
 
     import { onMount, untrack } from "svelte";
     import { SvelteMap } from "svelte/reactivity";
+    import { maxVolumeNameLength } from "./iso9660";
+    import { showDialog } from "./FullscreenDialog.svelte";
 
     const fileIconMap = new Map<string, string>();
     function setupIcons(icon: string, ...extensions: string[]) {
@@ -93,23 +95,25 @@
     setupIcons(IconVideo, "mp4", "mov", "mpg", "mpeg", "mkv", "avi", "webm", "flv");
     setupIcons(IconCompressed, "zip", "rar", "gz", "xz", "br", "lzma", "tar");
 
-    class LinkedListNode<TKey, TValue> {
-        public readonly key: TKey;
-        public readonly value: TValue;
-        public prev: LinkedListNode<TKey, TValue> | null = $state(null);
-        public next: LinkedListNode<TKey, TValue> | null = $state(null);
+    type LinkedListKey = string;
 
-        constructor(key: TKey, value: TValue) {
+    class LinkedListNode<TValue> {
+        public key: LinkedListKey = $state("");
+        public value: TValue;
+        public prev: LinkedListNode<TValue> | null = $state(null);
+        public next: LinkedListNode<TValue> | null = $state(null);
+
+        constructor(key: LinkedListKey, value: TValue) {
             this.key = key;
             this.value = value;
         }
     }
 
-    class LinkedList<TKey, TValue> {
-        public head: LinkedListNode<TKey, TValue> | null = $state(null);
-        public tail: LinkedListNode<TKey, TValue> | null = $state(null);
+    class LinkedList<TValue> {
+        public head: LinkedListNode<TValue> | null = $state(null);
+        public tail: LinkedListNode<TValue> | null = $state(null);
 
-        public nodeMap = new SvelteMap<TKey, LinkedListNode<TKey, TValue>>();
+        public nodeMap = new SvelteMap<LinkedListKey, LinkedListNode<TValue>>();
 
         public isEmpty() {
             return this.nodeMap.size === 0;
@@ -125,12 +129,12 @@
             this.nodeMap.clear();
         }
 
-        public get(key: TKey) {
+        public get(key: LinkedListKey) {
             return this.nodeMap.get(key);
         }
 
-        public pushBack(key: TKey, value: TValue) {
-            const node = $state(new LinkedListNode<TKey, TValue>(key, value));
+        public pushBack(key: LinkedListKey, value: TValue) {
+            const node = $state(new LinkedListNode<TValue>(key, value));
             if (this.tail === null) {
                 this.head = node;
                 this.tail = node;
@@ -145,7 +149,7 @@
             return node;
         }
 
-        public remove(node: LinkedListNode<TKey, TValue>) {
+        public remove(node: LinkedListNode<TValue>) {
             const isFirst = this.head !== null && node.key === this.head.key;
             const isLast = this.tail !== null && node.key === this.tail.key;
 
@@ -172,7 +176,7 @@
             this.nodeMap.delete(node.key);
         }
 
-        public addAfter(node: LinkedListNode<TKey, TValue>, toAdd: LinkedListNode<TKey, TValue>) {
+        public addAfter(node: LinkedListNode<TValue>, toAdd: LinkedListNode<TValue>) {
             const next = node.next;
             node.next = toAdd;
             toAdd.prev = next;
@@ -180,7 +184,7 @@
             this.nodeMap.set(toAdd.key, toAdd);
         }
 
-        public addBefore(node: LinkedListNode<TKey, TValue>, toAdd: LinkedListNode<TKey, TValue>) {
+        public addBefore(node: LinkedListNode<TValue>, toAdd: LinkedListNode<TValue>) {
             const prev = node.prev;
             node.prev = toAdd;
             toAdd.next = prev;
@@ -188,7 +192,23 @@
             this.nodeMap.set(toAdd.key, toAdd);
         }
 
-        public sortByKey(comparer: (a: TKey, b: TKey) => number) {
+        public changeKey(oldKey: LinkedListKey, newKey: LinkedListKey) {
+            const node = this.nodeMap.get(oldKey);
+            if (node === undefined) {
+                return false;
+            }
+
+            if (this.nodeMap.has(newKey)) {
+                return false;
+            }
+
+            this.nodeMap.delete(oldKey);
+            node.key = newKey;
+            this.nodeMap.set(newKey, node);
+            return true;
+        }
+
+        public sortByKey(comparer: (a: LinkedListKey, b: LinkedListKey) => number) {
             if (this.head === null) {
                 return;
             }
@@ -224,13 +244,13 @@
     }
 
     export interface Directory {
-        subdirectories: LinkedList<string, Directory>;
-        files: LinkedList<string, File>;
+        subdirectories: LinkedList<Directory>;
+        files: LinkedList<File>;
     }
 
     interface DirectoryInternal {
-        subdirectories: LinkedList<string, DirectoryInternal>;
-        files: LinkedList<string, File>;
+        subdirectories: LinkedList<DirectoryInternal>;
+        files: LinkedList<File>;
 
         parent: DirectoryInternal | null;
         collapsed: boolean;
@@ -274,14 +294,23 @@
     let folderAdder: HTMLInputElement;
     let fileAdder: HTMLInputElement;
 
-    function openPicker(input: HTMLInputElement) {
+    async function openPicker(input: HTMLInputElement, showConfirmation: boolean) {
+        if (showConfirmation && !isEmpty) {
+            const dialogResult = await showDialog(
+                "Selecting a new folder will clear all files and folders.\nDo you want to continue?",
+                null,
+                ["Yes", "Cancel"],
+            );
+            if (dialogResult.buttonIndex === 1) {
+                return;
+            }
+        }
+
         input.value = "";
         input.click();
     }
 
     function selectFolder() {
-        // TODO: show warning if the the file list is not empty
-
         rootDirectory.files.clear();
         rootDirectory.subdirectories.clear();
 
@@ -289,10 +318,13 @@
 
         addFiles(folderSelector);
 
+        // Always set to null first to trigger change
+        rootDirectoryName = null;
+
         if (folderSelector.files !== null && folderSelector.files.length !== 0) {
-            rootDirectoryName = folderSelector.files[0].webkitRelativePath.split("/")[0];
-        } else {
-            rootDirectoryName = null;
+            rootDirectoryName = folderSelector.files[0].webkitRelativePath
+                .split("/")[0]
+                .substring(0, maxVolumeNameLength);
         }
     }
     function addFolder() {
@@ -326,8 +358,8 @@
                     let childFolder = targetFolder.subdirectories.get(segment);
                     if (childFolder === undefined) {
                         const childFolder_ = $state<DirectoryInternal>({
-                            subdirectories: new LinkedList<string, DirectoryInternal>(),
-                            files: new LinkedList<string, File>(),
+                            subdirectories: new LinkedList<DirectoryInternal>(),
+                            files: new LinkedList<File>(),
                             parent: targetFolder,
                             collapsed: true,
                             selected: false,
@@ -432,9 +464,9 @@
     />
 
     <div class="import-buttons">
-        <button onclick={() => openPicker(folderSelector)}>Select folder</button>
-        <button onclick={() => openPicker(folderAdder)}>Add folder</button>
-        <button onclick={() => openPicker(fileAdder)}>Add files</button>
+        <button onclick={() => openPicker(folderSelector, true)}>Select folder</button>
+        <button onclick={() => openPicker(folderAdder, false)}>Add folder</button>
+        <button onclick={() => openPicker(fileAdder, false)}>Add files</button>
     </div>
 
     <div class="list-container">
@@ -482,7 +514,51 @@
                             <img src={DeleteIcon} />
                         </button>
 
-                        <button>
+                        <button
+                            onclick={async () => {
+                                let dialogMessage: string | null = null;
+                                let editingName = name;
+
+                                while (true) {
+                                    const dialogResult = await showDialog(
+                                        "Enter a new name:",
+                                        dialogMessage,
+                                        ["OK", "Cancel"],
+                                        editingName,
+                                    );
+
+                                    switch (dialogResult.buttonIndex) {
+                                        case 0: {
+                                            if (dialogResult.resultText !== undefined) {
+                                                if (dialogResult.resultText === name) {
+                                                    // Name didn't change
+                                                    return;
+                                                }
+
+                                                const target = isDirectory
+                                                    ? currentDirectory.subdirectories
+                                                    : currentDirectory.files;
+
+                                                const renamed = target.changeKey(name, dialogResult.resultText);
+                                                if (renamed) {
+                                                    target.sortByKey(stringComparer);
+                                                    return;
+                                                }
+
+                                                editingName = dialogResult.resultText;
+                                                dialogMessage = `A ${
+                                                    isDirectory ? "folder" : "file"
+                                                } with this name already exists`;
+                                            }
+                                            break;
+                                        }
+
+                                        default:
+                                            return;
+                                    }
+                                }
+                            }}
+                        >
                             <img src={EditIcon} />
                         </button>
                     </div>
@@ -538,8 +614,9 @@
         display: flex;
         flex-direction: column;
         gap: 8px;
-        flex-grow: 1;
-        min-height: 200px;
+        flex-grow: 5;
+        flex-basis: 0px;
+        min-height: 250px;
         overflow-y: auto;
     }
 

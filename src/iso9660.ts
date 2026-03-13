@@ -149,7 +149,10 @@ export function validateVolumeName(name: string): VolumeNameValidationResult {
 }
 
 // According to the standard, the length limit is 64 characters, but practically every reader supports length up to 110 characters
-export const maxFileOrDirectoryNameLength = 64;
+export const maxFileOrDirectoryNameLength = 110;
+
+// 32 bytes are allowed, which are 16 UCS2 characters
+export const maxVolumeNameLength = 16;
 
 // Since the path table stores the parent directory number as 16-bit numbers, 65535 is the largest possible id that can be stored
 export const maxNumDirectories = 65535;
@@ -689,7 +692,8 @@ function writeVolumeDate(view: DataView, offset: number, date: Date | null) {
             padStart(date.getUTCSeconds()) +
             "00"; // Hundredths of the second
 
-        writeStringASCII(view, offset, dateString, 17);
+        writeStringASCII(view, offset, dateString, 16);
+        view.setUint8(offset + 16, 0);
     }
 }
 
