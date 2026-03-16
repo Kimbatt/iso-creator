@@ -9,6 +9,7 @@
     import FullscreenDialog from "./FullscreenDialog.svelte";
     import {
         createISO,
+        FileOrDirectoryNameValidationResult,
         FileSystemNodeType,
         IsoCreationErrorCode,
         maxFileOrDirectoryNameLength,
@@ -145,12 +146,26 @@
             <div>Errors occurred during disk image creation:</div>
         {/if}
         {#each creationErrors as error}
-            {@const errorText = (() => {
+            {@const errorText = ((): string => {
                 switch (error.type) {
-                    case IsoCreationErrorCode.NameTooLong:
-                        return `${
-                            error.isDirectory ? "Folder" : "File"
-                        } name is too long (maximum length is ${maxFileOrDirectoryNameLength} characters)`;
+                    case IsoCreationErrorCode.InvalidFileOrDirectoryName: {
+                        const prefix = error.isDirectory ? "Folder" : "File";
+
+                        switch (error.validationResult) {
+                            case FileOrDirectoryNameValidationResult.Ok:
+                                // Shouldn't happen
+                                return "";
+
+                            case FileOrDirectoryNameValidationResult.Empty:
+                                return `${prefix} name must not be empty`;
+
+                            case FileOrDirectoryNameValidationResult.InvalidCharacter:
+                                return `${prefix} name cannot contain any of the following characters: < > : \\ / | ? *`;
+
+                            case FileOrDirectoryNameValidationResult.TooLong:
+                                return `${prefix} name is too long (maximum length is ${maxFileOrDirectoryNameLength} characters)`;
+                        }
+                    }
 
                     case IsoCreationErrorCode.NameAlreadyExists:
                         return `A file and a folder has the same name - this is not allowed`;
@@ -175,15 +190,11 @@
                 }
             })()}
 
-            {#if error.type === IsoCreationErrorCode.NameTooLong || error.type === IsoCreationErrorCode.NameAlreadyExists}
+            {#if error.type === IsoCreationErrorCode.InvalidFileOrDirectoryName || error.type === IsoCreationErrorCode.NameAlreadyExists}
                 <div class="error-with-path">
                     <div>{errorText}</div>
                     <span>Path:</span>
-                    <code>
-                        {error.path
-                            .map((segment, index) => segment + (index === error.path.length - 1 ? "" : "/"))
-                            .join("\n")}
-                    </code>
+                    <code>{error.path.join("\n")}</code>
                 </div>
             {:else}
                 <div>{errorText}</div>
@@ -353,6 +364,7 @@
                 background-color: #361010;
                 padding: 2px 4px;
                 border-radius: 4px;
+                overflow: auto;
             }
         }
     }

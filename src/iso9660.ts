@@ -84,7 +84,7 @@ const enum RecordFlags {
 }
 
 export const enum IsoCreationErrorCode {
-    NameTooLong,
+    InvalidFileOrDirectoryName,
     NameAlreadyExists,
     TooManyDirectories,
     InvalidVolumeName,
@@ -92,16 +92,17 @@ export const enum IsoCreationErrorCode {
 
 export type IsoCreationError =
     | {
-          type: IsoCreationErrorCode.TooManyDirectories;
-      }
-    | {
-          type: IsoCreationErrorCode.NameTooLong;
+          type: IsoCreationErrorCode.InvalidFileOrDirectoryName;
           isDirectory: boolean;
           path: string[];
+          validationResult: FileOrDirectoryNameValidationResult;
       }
     | {
           type: IsoCreationErrorCode.NameAlreadyExists;
           path: string[];
+      }
+    | {
+          type: IsoCreationErrorCode.TooManyDirectories;
       }
     | {
           type: IsoCreationErrorCode.InvalidVolumeName;
@@ -146,6 +147,28 @@ export function validateVolumeName(name: string): VolumeNameValidationResult {
     }
 
     return VolumeNameValidationResult.Ok;
+}
+
+export const enum FileOrDirectoryNameValidationResult {
+    Ok,
+    Empty,
+    InvalidCharacter,
+    TooLong,
+}
+
+function validateName(name: string): FileOrDirectoryNameValidationResult {
+    if (name.length === 0) {
+        return FileOrDirectoryNameValidationResult.Empty;
+    }
+    if (name.length > maxFileOrDirectoryNameLength) {
+        return FileOrDirectoryNameValidationResult.TooLong;
+    }
+
+    if (/[<>:"\\/|?*]/.test(name)) {
+        return FileOrDirectoryNameValidationResult.InvalidCharacter;
+    }
+
+    return FileOrDirectoryNameValidationResult.Ok;
 }
 
 // According to the standard, the length limit is 64 characters, but practically every reader supports length up to 110 characters
@@ -236,9 +259,10 @@ export function createISO(
 
             const jolietName = child.name;
 
-            const nameTooLong = jolietName.length > maxFileOrDirectoryNameLength;
-            if (nameTooLong || parent.jolietUsedNames.has(jolietName)) {
-                // Name is too long or already exists, collect directory hierarchy for error reporting
+            const nameValidationResult = validateName(jolietName);
+            const invalidName = nameValidationResult !== FileOrDirectoryNameValidationResult.Ok;
+            if (invalidName || parent.jolietUsedNames.has(jolietName)) {
+                // Name is invalid or already exists, collect directory hierarchy for error reporting
 
                 const path: string[] = [];
                 let currentParent = parent;
@@ -250,11 +274,12 @@ export function createISO(
 
                 path.push(child.name);
 
-                if (nameTooLong) {
+                if (invalidName) {
                     errors.push({
-                        type: IsoCreationErrorCode.NameTooLong,
+                        type: IsoCreationErrorCode.InvalidFileOrDirectoryName,
                         isDirectory,
                         path,
+                        validationResult: nameValidationResult,
                     });
                 } else {
                     errors.push({

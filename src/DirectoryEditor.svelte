@@ -27,9 +27,9 @@
     import IconCompressed from "./assets/zip.svg";
 
     import { onMount, untrack } from "svelte";
-    import { SvelteMap } from "svelte/reactivity";
     import { maxVolumeNameLength } from "./iso9660";
     import { showDialog } from "./FullscreenDialog.svelte";
+    import { LinkedList } from "./LinkedList.svelte";
 
     const fileIconMap = new Map<string, string>();
     function setupIcons(icon: string, ...extensions: string[]) {
@@ -95,160 +95,13 @@
     setupIcons(IconVideo, "mp4", "mov", "mpg", "mpeg", "mkv", "avi", "webm", "flv");
     setupIcons(IconCompressed, "zip", "rar", "gz", "xz", "br", "lzma", "tar");
 
-    type LinkedListKey = string;
-
-    class LinkedListNode<TValue> {
-        public key: LinkedListKey = $state("");
-        public value: TValue;
-        public prev: LinkedListNode<TValue> | null = $state(null);
-        public next: LinkedListNode<TValue> | null = $state(null);
-
-        constructor(key: LinkedListKey, value: TValue) {
-            this.key = key;
-            this.value = value;
-        }
-    }
-
-    class LinkedList<TValue> {
-        public head: LinkedListNode<TValue> | null = $state(null);
-        public tail: LinkedListNode<TValue> | null = $state(null);
-
-        public nodeMap = new SvelteMap<LinkedListKey, LinkedListNode<TValue>>();
-
-        public isEmpty() {
-            return this.nodeMap.size === 0;
-        }
-
-        public get length() {
-            return this.nodeMap.size;
-        }
-
-        public clear() {
-            this.head = null;
-            this.tail = null;
-            this.nodeMap.clear();
-        }
-
-        public get(key: LinkedListKey) {
-            return this.nodeMap.get(key);
-        }
-
-        public pushBack(key: LinkedListKey, value: TValue) {
-            const node = $state(new LinkedListNode<TValue>(key, value));
-            if (this.tail === null) {
-                this.head = node;
-                this.tail = node;
-            } else {
-                const tail = this.tail;
-                tail.next = node;
-                node.prev = tail;
-                this.tail = node;
-            }
-
-            this.nodeMap.set(key, node);
-            return node;
-        }
-
-        public remove(node: LinkedListNode<TValue>) {
-            const isFirst = this.head !== null && node.key === this.head.key;
-            const isLast = this.tail !== null && node.key === this.tail.key;
-
-            const prev = node.prev;
-            const next = node.next;
-
-            if (prev !== null) {
-                prev.next = next;
-            }
-            if (next !== null) {
-                next.prev = prev;
-            }
-
-            node.prev = null;
-            node.next = null;
-
-            if (isFirst) {
-                this.head = next;
-            }
-            if (isLast) {
-                this.tail = prev;
-            }
-
-            this.nodeMap.delete(node.key);
-        }
-
-        public addAfter(node: LinkedListNode<TValue>, toAdd: LinkedListNode<TValue>) {
-            const next = node.next;
-            node.next = toAdd;
-            toAdd.prev = next;
-
-            this.nodeMap.set(toAdd.key, toAdd);
-        }
-
-        public addBefore(node: LinkedListNode<TValue>, toAdd: LinkedListNode<TValue>) {
-            const prev = node.prev;
-            node.prev = toAdd;
-            toAdd.next = prev;
-
-            this.nodeMap.set(toAdd.key, toAdd);
-        }
-
-        public changeKey(oldKey: LinkedListKey, newKey: LinkedListKey) {
-            const node = this.nodeMap.get(oldKey);
-            if (node === undefined) {
-                return false;
-            }
-
-            if (this.nodeMap.has(newKey)) {
-                return false;
-            }
-
-            this.nodeMap.delete(oldKey);
-            node.key = newKey;
-            this.nodeMap.set(newKey, node);
-            return true;
-        }
-
-        public sortByKey(comparer: (a: LinkedListKey, b: LinkedListKey) => number) {
-            if (this.head === null) {
-                return;
-            }
-
-            const elements = [...this];
-            elements.sort((a, b) => comparer(a.key, b.key));
-
-            let current = elements[0];
-
-            current.prev = null;
-            this.head = current;
-
-            const length = elements.length;
-            for (let i = 1; i < length; ++i) {
-                const next = elements[i];
-                current.next = next;
-                next.prev = current;
-
-                current = next;
-            }
-
-            current.next = null;
-            this.tail = current;
-        }
-
-        *[Symbol.iterator]() {
-            let node = this.head;
-            while (node !== null) {
-                yield node;
-                node = node.next;
-            }
-        }
-    }
-
     export interface Directory {
         subdirectories: LinkedList<Directory>;
         files: LinkedList<File>;
     }
 
     interface DirectoryInternal {
+        name: string;
         subdirectories: LinkedList<DirectoryInternal>;
         files: LinkedList<File>;
 
@@ -258,6 +111,7 @@
     }
 
     let rootDirectory = $state<DirectoryInternal>({
+        name: "",
         files: new LinkedList(),
         subdirectories: new LinkedList(),
         parent: null,
@@ -283,6 +137,69 @@
     export function getRootDirectoryName() {
         return rootDirectoryName;
     }
+
+    const stringComparer = new Intl.Collator().compare;
+
+    async function rename(
+        nameRef: { name: string },
+        isDirectory: boolean,
+        parentDirectory: DirectoryInternal,
+        renameNewFile: boolean,
+        acceptOriginalName: boolean,
+    ): Promise<boolean> {
+        let dialogMessage: string | null = null;
+        let editingName = nameRef.name;
+        const originalName = nameRef.name;
+
+        while (true) {
+            const dialogResult = await showDialog(
+                "Enter a new name:",
+                dialogMessage,
+                ["Cancel", "OK"] as const,
+                editingName,
+                "OK",
+            );
+
+            if (dialogResult.button === "Cancel") {
+                return false;
+            }
+
+            const newName = dialogResult.resultText;
+            if (newName === undefined) {
+                // Shouldn't happen
+                continue;
+            }
+
+            if (acceptOriginalName && newName === originalName) {
+                return false;
+            }
+
+            if (newName.length === 0) {
+                dialogMessage = "Name cannot be empty";
+                continue;
+            }
+
+            const target = isDirectory ? parentDirectory.subdirectories : parentDirectory.files;
+
+            let renamed = false;
+            if (renameNewFile) {
+                renamed = target.get(newName) === undefined;
+            } else {
+                renamed = target.changeKey(originalName, newName);
+                if (renamed) {
+                    target.sortByKey(stringComparer);
+                }
+            }
+
+            if (renamed) {
+                nameRef.name = newName;
+                return true;
+            }
+
+            editingName = newName;
+            dialogMessage = `A ${isDirectory ? "folder" : "file"} with this name already exists`;
+        }
+    }
 </script>
 
 <script lang="ts">
@@ -299,9 +216,9 @@
             const dialogResult = await showDialog(
                 "Selecting a new folder will clear all files and folders.\nDo you want to continue?",
                 null,
-                ["Yes", "Cancel"],
+                ["Cancel", "Yes"] as const,
             );
-            if (dialogResult.buttonIndex === 1) {
+            if (dialogResult.button === "Cancel") {
                 return;
             }
         }
@@ -310,13 +227,13 @@
         input.click();
     }
 
-    function selectFolder() {
+    async function selectFolder() {
         rootDirectory.files.clear();
         rootDirectory.subdirectories.clear();
 
         selectDirectory(rootDirectory, false);
 
-        addFiles(folderSelector);
+        await addFiles(folderSelector, false);
 
         // Always set to null first to trigger change
         rootDirectoryName = null;
@@ -327,37 +244,44 @@
                 .substring(0, maxVolumeNameLength);
         }
     }
-    function addFolder() {
-        addFiles(folderAdder);
+    async function addFolder() {
+        await addFiles(folderAdder, true);
     }
-    function addFile() {
-        addFiles(fileAdder);
+    async function addFile() {
+        await addFiles(fileAdder, false);
     }
-
-    const stringComparer = new Intl.Collator().compare;
 
     const affectedDirectories = new Set<DirectoryInternal>();
 
-    function addFiles(input: HTMLInputElement) {
+    async function addFiles(input: HTMLInputElement, includeRootFolder: boolean) {
         if (input.files === null || input.files.length === 0) {
             return;
         }
 
         affectedDirectories.clear();
 
-        for (const file of input.files) {
+        let skipAll = false;
+        let overwriteAll = false;
+
+        let newFileName: string | null = null; // For renaming files that are being added
+
+        const segmentStartIndex = includeRootFolder ? 0 : 1;
+        for (let i = 0; i < input.files.length; ++i) {
+            const file = input.files[i];
+
             let targetFolder = currentDirectory;
 
             if (file.webkitRelativePath !== "") {
                 const segments = file.webkitRelativePath.split("/");
 
                 // First segment is the root folder, last segment is the file name
-                for (let i = 1; i < segments.length - 1; ++i) {
+                for (let i = segmentStartIndex; i < segments.length - 1; ++i) {
                     const segment = segments[i];
 
                     let childFolder = targetFolder.subdirectories.get(segment);
                     if (childFolder === undefined) {
                         const childFolder_ = $state<DirectoryInternal>({
+                            name: segment,
                             subdirectories: new LinkedList<DirectoryInternal>(),
                             files: new LinkedList<File>(),
                             parent: targetFolder,
@@ -373,13 +297,104 @@
                 }
             }
 
-            // TODO: check duplicates
-            const fileNode = targetFolder.files.get(file.name);
-            if (fileNode === undefined) {
-                targetFolder.files.pushBack(file.name, file);
+            newFileName ??= file.name;
+            const existingFile = targetFolder.files.get(newFileName);
+            let cancel = false;
+
+            let skipCurrent = false;
+            let overwriteCurrent = false;
+
+            if (existingFile !== undefined) {
+                if (skipAll) {
+                    skipCurrent = true;
+                } else if (overwriteAll) {
+                    overwriteCurrent = true;
+                } else {
+                    const segments = [newFileName];
+                    let parent: DirectoryInternal | null = targetFolder;
+                    while (true) {
+                        const dir = parent;
+                        parent = parent.parent;
+                        if (parent === null) {
+                            break;
+                        }
+
+                        segments.push(dir.name);
+                    }
+
+                    segments.reverse();
+
+                    const dialogResult = await showDialog(
+                        "A file with the same name already exists:",
+                        segments.join("/\n"),
+                        [
+                            "Overwrite all",
+                            "Overwrite",
+                            "Skip all",
+                            "Skip",
+                            "Rename new file",
+                            "Rename existing file",
+                            "Cancel",
+                        ] as const,
+                    );
+
+                    switch (dialogResult.button) {
+                        case "Overwrite all":
+                            overwriteAll = true;
+                        // Fallthrough
+
+                        case "Overwrite":
+                            overwriteCurrent = true;
+                            break;
+
+                        case "Skip all":
+                            skipAll = true;
+                        // Fallthrough
+
+                        case "Skip":
+                            skipCurrent = true;
+                            break;
+
+                        case "Rename existing file": {
+                            await rename({ name: file.name }, false, targetFolder, false, false);
+                            // Check again
+                            --i;
+                            continue;
+                        }
+
+                        case "Rename new file": {
+                            const nameRef: { name: string } = { name: newFileName };
+                            const renamed = await rename(nameRef, false, targetFolder, true, false);
+                            if (renamed) {
+                                newFileName = nameRef.name;
+                            }
+
+                            --i;
+                            continue;
+                        }
+
+                        case "Cancel":
+                            cancel = true;
+                            break;
+                    }
+                }
+
+                if (overwriteCurrent) {
+                    targetFolder.files.remove(existingFile);
+                    targetFolder.files.pushBack(newFileName, file);
+                } else if (skipCurrent) {
+                    // Nothing
+                }
+            } else {
+                targetFolder.files.pushBack(newFileName, file);
             }
 
             affectedDirectories.add(targetFolder);
+            newFileName = null;
+
+            if (cancel) {
+                break;
+            }
         }
 
         for (const dir of affectedDirectories) {
@@ -514,51 +529,7 @@
                             <img src={DeleteIcon} />
                         </button>
 
-                        <button
-                            onclick={async () => {
-                                let dialogMessage: string | null = null;
-                                let editingName = name;
-
-                                while (true) {
-                                    const dialogResult = await showDialog(
-                                        "Enter a new name:",
-                                        dialogMessage,
-                                        ["OK", "Cancel"],
-                                        editingName,
-                                    );
-
-                                    switch (dialogResult.buttonIndex) {
-                                        case 0: {
-                                            if (dialogResult.resultText !== undefined) {
-                                                if (dialogResult.resultText === name) {
-                                                    // Name didn't change
-                                                    return;
-                                                }
-
-                                                const target = isDirectory
-                                                    ? currentDirectory.subdirectories
-                                                    : currentDirectory.files;
-
-                                                const renamed = target.changeKey(name, dialogResult.resultText);
-                                                if (renamed) {
-                                                    target.sortByKey(stringComparer);
-                                                    return;
-                                                }
-
-                                                editingName = dialogResult.resultText;
-                                                dialogMessage = `A ${
-                                                    isDirectory ? "folder" : "file"
-                                                } with this name already exists`;
-                                            }
-                                            break;
-                                        }
-
-                                        default:
-                                            return;
-                                    }
-                                }
-                            }}
-                        >
+                        <button onclick={() => rename({ name }, isDirectory, currentDirectory, false, true)}>
                             <img src={EditIcon} />
                         </button>
                     </div>

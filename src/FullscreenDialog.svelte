@@ -9,16 +9,24 @@
     let dialogHasInputText = $state(false);
     let dialogInputText = $state("");
 
+    let dialogConfirmButtonIndex: number | null = 0;
+
     let textInputElement: HTMLInputElement;
 
     let buttonClickResolver = (_: number) => {};
 
-    interface ShowDialogResult {
-        buttonIndex: number;
+    interface ShowDialogResult<TButtons extends string[]> {
+        button: TButtons[number];
         resultText?: string;
     }
 
-    export async function showDialog(title: string, message: string | null, buttons: string[], inputText?: string) {
+    export async function showDialog<TButtons extends string[]>(
+        title: string,
+        message: string | null,
+        buttons: TButtons,
+        inputText?: string,
+        confirmButton?: TButtons[number],
+    ) {
         dialogVisible = true;
         dialogTitle = title;
         dialogMessage = message;
@@ -35,14 +43,20 @@
             dialogHasInputText = false;
         }
 
+        if (confirmButton !== undefined) {
+            dialogConfirmButtonIndex = buttons.indexOf(confirmButton);
+        } else {
+            dialogConfirmButtonIndex = null;
+        }
+
         const buttonIndex = await new Promise<number>(res => {
             buttonClickResolver = res;
         });
 
         dialogVisible = false;
 
-        const result: ShowDialogResult = {
-            buttonIndex,
+        const result: ShowDialogResult<TButtons> = {
+            button: buttons[buttonIndex],
         };
 
         if (inputText !== undefined) {
@@ -66,9 +80,8 @@
             bind:this={textInputElement}
             bind:value={dialogInputText}
             onkeypress={ev => {
-                if (ev.key === "Enter") {
-                    // Assuming the "confirm" action is at index 0
-                    buttonClickResolver(0);
+                if (ev.key === "Enter" && dialogConfirmButtonIndex !== null) {
+                    buttonClickResolver(dialogConfirmButtonIndex);
                 }
             }}
         />
@@ -125,17 +138,16 @@
 
     .buttons {
         display: grid;
-        grid-auto-columns: 1fr;
-        grid-auto-flow: column;
-        gap: 8px;
-        align-self: flex-end;
+        grid-template-columns: 1fr 1fr;
 
-        > button {
-            min-width: 120px;
-        }
+        gap: 8px;
+
+        direction: rtl;
     }
 
     .text {
         white-space: pre-line;
+        overflow: auto;
+        max-height: 200px;
     }
 </style>
