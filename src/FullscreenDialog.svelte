@@ -65,6 +65,10 @@
 
         return result;
     }
+
+    export function isDialogVisible() {
+        return dialogVisible;
+    }
 </script>
 
 <div
@@ -108,8 +112,7 @@
         top: 0px;
         left: 0px;
         width: 100vw;
-        height: 100vh;
-        height: 100dvh;
+        height: 100%;
 
         background-color: rgba($color: #000000, $alpha: 0.8);
         backdrop-filter: blur(5px);
@@ -149,5 +152,6 @@
         white-space: pre-line;
         overflow: auto;
         max-height: 200px;
+        line-height: 24px;
     }
 </style>

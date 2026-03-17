@@ -28,7 +28,7 @@
 
     import { onMount, untrack } from "svelte";
     import { maxVolumeNameLength } from "./iso9660";
-    import { showDialog } from "./FullscreenDialog.svelte";
+    import { isDialogVisible, showDialog } from "./FullscreenDialog.svelte";
     import { LinkedList } from "./LinkedList.svelte";
 
     const fileIconMap = new Map<string, string>();
@@ -227,34 +227,53 @@
         input.click();
     }
 
-    async function selectFolder() {
+    interface FileListInterface {
+        // Used for importing files from both file inputs and drag-and-drop events
+        // Since they use a completely different format to retrieve the file list,
+        // this interface is used as the target format
+
+        readonly length: number;
+        [index: number]: File;
+    }
+
+    function clearRootDirectory() {
         rootDirectory.files.clear();
         rootDirectory.subdirectories.clear();
 
         selectDirectory(rootDirectory, false);
+    }
 
-        await addFiles(folderSelector, false);
-
+    function updateRootDirectoryName(relativePath: string) {
         // Always set to null first to trigger change
         rootDirectoryName = null;
 
+        rootDirectoryName = relativePath.split("/")[0].substring(0, maxVolumeNameLength);
+    }
+
+    async function selectFolder() {
+        clearRootDirectory();
+
+        await addFiles(folderSelector.files, false, null);
+
         if (folderSelector.files !== null && folderSelector.files.length !== 0) {
-            rootDirectoryName = folderSelector.files[0].webkitRelativePath
-                .split("/")[0]
-                .substring(0, maxVolumeNameLength);
+            updateRootDirectoryName(folderSelector.files[0].webkitRelativePath);
         }
     }
     async function addFolder() {
-        await addFiles(folderAdder, true);
+        await addFiles(folderAdder.files, true, null);
     }
     async function addFile() {
-        await addFiles(fileAdder, false);
+        await addFiles(fileAdder.files, false, null);
     }
 
     const affectedDirectories = new Set<DirectoryInternal>();
 
-    async function addFiles(input: HTMLInputElement, includeRootFolder: boolean) {
-        if (input.files === null || input.files.length === 0) {
+    async function addFiles(
+        files: FileListInterface | null,
+        includeRootFolder: boolean,
+        relativePathMap: Map<File, string> | null,
+    ) {
+        if (files === null || files.length === 0) {
             return;
         }
 
@@ -266,13 +285,14 @@
         let newFileName: string | null = null; // For renaming files that are being added
 
         const segmentStartIndex = includeRootFolder ? 0 : 1;
-        for (let i = 0; i < input.files.length; ++i) {
-            const file = input.files[i];
+        for (let i = 0; i < files.length; ++i) {
+            const file = files[i];
 
             let targetFolder = currentDirectory;
 
-            if (file.webkitRelativePath !== "") {
-                const segments = file.webkitRelativePath.split("/");
+            const relativePath = relativePathMap?.get(file) ?? file.webkitRelativePath;
+            if (relativePath !== "") {
+                const segments = relativePath.split("/");
 
                 // First segment is the root folder, last segment is the file name
                 for (let i = segmentStartIndex; i < segments.length - 1; ++i) {
@@ -447,8 +467,190 @@
         }
     }
 
+    function onDragOver(ev: DragEvent) {
+        ev.preventDefault();
+    }
+
+    let canDrop = $derived(!isDialogVisible());
+    let dragCount = $state(0);
+    let dropZoneVisible = $derived(canDrop && dragCount !== 0);
+
+    function onDragEnter(_ev: DragEvent) {
+        ++dragCount;
+    }
+    function onDragLeave(_ev: DragEvent) {
+        --dragCount;
+    }
+
+    async function onDrop(ev: DragEvent) {
+        ev.preventDefault();
+
+        const { dataTransfer } = ev;
+        if (dataTransfer === null || !canDrop) {
+            dragCount = 0;
+            return;
+        }
+
+        interface EntryWithRelativePath {
+            entry: FileSystemEntry;
+            pathSegments: string[];
+        }
+
+        const queue: EntryWithRelativePath[] = [];
+
+        // If a single directory is dropped, then it can either become the new root folder,
+        // or can just imported as a single folder into the current directory
+        // If multiple files/directories are selected, then always import into the current directory
+        let directoryCount = 0;
+        let fileCount = 0;
+
+        for (let i = 0; i < dataTransfer.items.length; ++i) {
+            const item = dataTransfer.items[i];
+            const entry = item.webkitGetAsEntry();
+            if (entry === null) {
+                continue;
+            }
+
+            if (entry.isFile) {
+                ++fileCount;
+            } else {
+                ++directoryCount;
+            }
+
+            queue.push({
+                entry,
+                pathSegments: [],
+            });
+        }
+
+        let isSingleDirectory = directoryCount === 1 && fileCount === 0;
+
+        const allFiles: File[] = [];
+        const fileToRelativePathMap = new Map<File, string>();
+
+        const allReadPromises: Promise<unknown>[] = [];
+
+        while (queue.length > 0) {
+            const { entry, pathSegments } = queue.shift()!;
+
+            if (entry.isFile) {
+                const file = entry as FileSystemFileEntry;
+
+                // No need to await each file separately, just await them all at once at the end
+                // The order doesn't matter, since they will be sorted anyways
+                allReadPromises.push(
+                    new Promise<void>(res => {
+                        file.file(
+                            file => {
+                                const relativePath =
+                                    (pathSegments.length === 0 ? "" : pathSegments.join("/") + "/") + file.name;
+
+                                fileToRelativePathMap.set(file, relativePath);
+                                allFiles.push(file);
+                                res();
+                            },
+                            () => res(),
+                        );
+                    }),
+                );
+            } else {
+                const folder = entry as FileSystemDirectoryEntry;
+                const reader = folder.createReader();
+
+                const currentSegments = [...pathSegments, folder.name];
+
+                while (true) {
+                    const entries = await new Promise<FileSystemEntry[] | null>(res => {
+                        reader.readEntries(res, () => res(null));
+                    });
+
+                    if (entries === null || entries.length === 0) {
+                        break;
+                    }
+
+                    queue.push(
+                        ...entries.map(
+                            (entry): EntryWithRelativePath => ({
+                                entry,
+                                pathSegments: currentSegments,
+                            }),
+                        ),
+                    );
+                }
+            }
+        }
+
+        await Promise.all(allReadPromises);
+        dragCount = 0;
+
+        if (allFiles.length === 0) {
+            // Can happen if an empty folder, or non-file data was dropped
+            return;
+        }
+
+        let includeRootFolder = true;
+        let dialogShown = false;
+        if (isSingleDirectory && currentDirectory === rootDirectory) {
+            if (isEmpty) {
+                includeRootFolder = false;
+            } else {
+                const dialogResult = await showDialog(
+                    `A single folder was dropped - would you like to:
+- Add it to the current folder
+OR
+- Import it as the root folder (and replace existing files)?`,
+                    null,
+                    ["Import as root folder", "Add to current folder", "Cancel"] as const,
+                );
+
+                dialogShown = true;
+
+                if (dialogResult.button === "Import as root folder") {
+                    includeRootFolder = false;
+                    clearRootDirectory();
+                } else if (dialogResult.button === "Cancel") {
+                    return;
+                }
+            }
+        }
+
+        if (!dialogShown) {
+            const fileText = `file${allFiles.length === 1 ? "" : "s"}`;
+
+            const dialogResult = await showDialog(`Do you want to add ${allFiles.length} ${fileText}?`, null, [
+                "Cancel",
+                `Add ${fileText}`,
+            ] as const);
+
+            if (dialogResult.button === "Cancel") {
+                return;
+            }
+        }
+
+        if (!includeRootFolder) {
+            for (const [, relativePath] of fileToRelativePathMap) {
+                updateRootDirectoryName(relativePath);
+                break;
+            }
+        }
+
+        await addFiles(allFiles, includeRootFolder, fileToRelativePathMap);
+    }
+
     onMount(() => {
         selectDirectory(rootDirectory, false);
+
+        window.addEventListener("dragover", onDragOver);
+        window.addEventListener("dragenter", onDragEnter);
+        window.addEventListener("dragleave", onDragLeave);
+        window.addEventListener("drop", onDrop);
+
+        return () => {
+            window.removeEventListener("dragover", onDragOver);
+            window.removeEventListener("dragenter", onDragEnter);
+            window.removeEventListener("dragleave", onDragLeave);
+            window.removeEventListener("drop", onDrop);
+        };
     });
 </script>
 
@@ -574,6 +776,13 @@
             </div>
         {/if}
     </div>
+</div>
+
+<div
+    class="drop-zone"
+    style:display={dropZoneVisible ? null : "none"}
+>
+    <div>Drop files and folders here</div>
 </div>
 
 <style lang="scss">
@@ -785,5 +994,24 @@
         color: c.$color-placeholder;
         font-style: italic;
         user-select: none;
+    }
+
+    .drop-zone {
+        position: absolute;
+        top: 0px;
+        left: 0px;
+        width: 100vw;
+        height: 100%;
+        user-select: none;
+        font-size: c.$font-size-large;
+        font-style: italic;
+        color: c.$color-text-disabled;
+
+        background-color: rgba($color: #000000, $alpha: 0.8);
+        backdrop-filter: blur(5px);
+
+        display: flex;
+        justify-content: center;
+        align-items: center;
     }
 </style>

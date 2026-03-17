@@ -23,7 +23,19 @@
     let downloadLink: HTMLAnchorElement;
 
     let isEmpty = $derived.by(isRootDirectoryEmpty);
-    let volumeName = $state("");
+    let volumeName = $state(
+        (() => {
+            const now = new Date();
+            const year = now.getFullYear();
+            const month = now.getMonth() + 1;
+            const day = now.getDate();
+
+            const pad = (value: number) => value.toString().padStart(2, "0");
+
+            return `${year}_${pad(month)}_${pad(day)}`;
+        })(),
+    );
+
     let volumeNameValidationResult = $derived(validateVolumeName(volumeName));
 
     let creationErrors: IsoCreationError[] = $state([]); // These errors don't disable the download button, because they are not known in advance
@@ -295,10 +307,13 @@
             padding: 4px 2px;
             border-radius: c.$default-border-radius;
         }
+
+        #app {
+            position: relative;
+        }
     }
 
     .page {
-        position: relative;
         padding: 20px;
         margin: auto;
 
